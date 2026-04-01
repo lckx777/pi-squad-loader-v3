@@ -14,7 +14,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 import type {
   SquadWorkflow, V2WorkflowStep, ModelStrategy, ParsedSquad, HarnessConfig
 } from "./squad-parser.js";
@@ -208,10 +208,11 @@ export function saveArtifact(
   format: string = "text"
 ): string {
   const dir = artifactsDir(cwd, runId);
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, name);
-  writeFileSync(path, content, "utf8");
-  return path;
+  const fullPath = join(dir, name);
+  // Create parent dirs for nested artifact names (e.g. "extraction/01-profiles.md")
+  mkdirSync(dirname(fullPath), { recursive: true });
+  writeFileSync(fullPath, content, "utf8");
+  return fullPath;
 }
 
 export function listArtifacts(
