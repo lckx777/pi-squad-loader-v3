@@ -259,17 +259,27 @@ export function buildWorkflowChain(
           v2Step: step,
         });
       } else {
-        const agent = squad.agents.find(
-          (a) => a.id === step.agent || a.id.endsWith(step.agent!)
-        );
-        if (!agent) continue;
+        // Handle cross-squad agent refs: "other-squad/agentId"
+        const isCrossSquad = step.agent?.includes("/");
+        let piName: string;
+        let model: string | undefined;
 
-        const piName = `squad--${squad.manifest.name}--${agent.id}`;
+        if (isCrossSquad) {
+          const [crossSquad, crossAgent] = step.agent!.split("/", 2);
+          piName = `squad--${crossSquad}--${crossAgent}`;
+          model = step.model || undefined;
+        } else {
+          const agent = squad.agents.find(
+            (a) => a.id === step.agent || a.id.endsWith(step.agent!)
+          );
+          if (!agent) continue;
+          piName = `squad--${squad.manifest.name}--${agent.id}`;
+          model = step.model || agent.model || undefined;
+        }
+
         const taskPrompt = i === 0
           ? step.action || ""
           : `Based on previous pipeline output:\n{previous}\n\n${step.action || ""}`;
-
-        const model = step.model || agent.model || undefined;
 
         chain.push({
           agent: piName,

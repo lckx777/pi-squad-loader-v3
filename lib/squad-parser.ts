@@ -549,6 +549,23 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
     const agentSequence = safeArray(parsed.agent_sequence);
     const hasV2Sequence = Array.isArray(workflow.sequence) && workflow.sequence.length > 0;
 
+    // Variant C: top-level `steps:` as dict-of-numbered-keys or list
+    // Used by spy-to-production, beat-control-pipeline, roteiro-factory etc.
+    // Shape: steps: { 1: {agent, task, description, ...}, 2: {...} }
+    //    or: steps: [ {agent, task, description, ...}, ... ]
+    let topLevelSteps: any[] = [];
+    if (!hasV2Sequence && parsed.steps && typeof parsed.steps === "object") {
+      if (Array.isArray(parsed.steps)) {
+        topLevelSteps = parsed.steps;
+      } else {
+        // dict keyed by step number — sort by key and collect values
+        topLevelSteps = Object.keys(parsed.steps)
+          .sort((a, b) => Number(a) - Number(b))
+          .map((k) => parsed.steps[k]);
+      }
+    }
+    const hasTopLevelSteps = topLevelSteps.length > 0;
+
     // v3: detect harness at workflow level
     const workflowHarness = parseHarnessConfig(workflow.harness || parsed.harness);
     const isV3 = workflowHarness !== null;
@@ -568,6 +585,22 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
             ? [s.requires]
             : safeArray(s.requires).map((r: any) => typeof r === "object" ? safeStr(r.artifact) : safeStr(r)),
         }));
+    } else if (hasTopLevelSteps) {
+      // Convert top-level steps (variant C) to v1-compatible format
+      steps = topLevelSteps
+        .filter((s: any) => s && s.agent)
+        .map((s: any) => {
+          // Cross-squad agent ref: prepend squad/ if present and different from parent
+          const agentId = s.squad && s.squad !== parsed.name
+            ? `${safeStr(s.squad)}/${safeStr(s.agent)}`
+            : safeStr(s.agent);
+          return {
+            agent: agentId,
+            action: safeStr(s.description) || safeStr(s.task) || safeStr(s.agent),
+            creates: "",
+            requires: [],
+          };
+        });
     } else if (agentSequence.length > 0) {
       const keyCommands = safeArray(parsed.key_commands);
       steps = agentSequence.map((item: any, i: number) => {
@@ -654,7 +687,45 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
 
           return step;
         })
-      : [];
+      : hasTopLevelSteps
+        ? topLevelSteps
+            .filter((s: any) => s && s.agent)
+            .map((s: any) => {
+              // Cross-squad: if step specifies a different squad, prefix agent
+              const agentId = s.squad && s.squad !== parsed.name
+                ? `${safeStr(s.squad)}/${safeStr(s.agent)}`
+                : safeStr(s.agent);
+              const step: V2WorkflowStep = {
+                type: "agent" as const,
+                agent: agentId,
+                action: safeStr(s.description) || safeStr(s.task) || safeStr(s.agent),
+                model: safeStr(s.model),
+                creates: "",
+                requires: [],
+              };
+              if (s.phase) step.phase = s.phase;
+              if (s.gate) {
+                step.validation = {
+                  schema: "",
+                  assertions: [safeStr(s.gate.condition)],
+                  on_fail: safeStr(s.gate.on_fail) || "abort",
+                  max_retries: 1,
+                };
+              }
+              if (s.loop) {
+                step.loop_detection = {
+                  enabled: true,
+                  max_identical_outputs: safeNum(s.loop.max_iterations, 2),
+                  on_detect: (safeStr(s.loop.kill_action) || "abort") as "abort" | "escalate" | "change-strategy",
+                };
+              }
+              if (s.skip_if) {
+                // Store skip_if in action prefix so the runtime can evaluate it
+                step.action = `[SKIP_IF: ${safeStr(s.skip_if)}] ${step.action}`;
+              }
+              return step;
+            })
+        : [];
 
     // Collect human gate IDs
     const humanGates = v2Sequence
@@ -676,12 +747,12 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
     } : null;
 
     return {
-      name: safeStr(parsed.workflow_name) || safeStr(workflow.name) || basename(workflowPath, ".yaml"),
+      name: safeStr(parsed.name) || safeStr(parsed.workflow_name) || safeStr(workflow.name) || basename(workflowPath, ".yaml"),
       description: safeStr(parsed.description) || safeStr(workflow.description) || "",
       agentSequence,
       steps,
       filePath: workflowPath,
-      isV2: hasV2Sequence,
+      isV2: hasV2Sequence || hasTopLevelSteps,
       v2Sequence,
       v2State,
       v2ModelStrategy,
