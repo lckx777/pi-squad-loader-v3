@@ -825,8 +825,9 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
         taskPrompt += "\n" + artifactInstructions.join("\n");
       }
 
-      // Dispatch agent
-      let output = await spawnAgent(step.agent, taskPrompt, ctx.cwd, signal, resolvedModel);
+      // Dispatch agent — v2 workflows get extended timeout (15min) for research + writing
+      const v2Timeout = 900_000; // 15 minutes
+      let output = await spawnAgent(step.agent, taskPrompt, ctx.cwd, signal, resolvedModel, v2Timeout);
 
       // ── VALIDATION GATE (v3: REAL EXECUTION) ──
       let validationSummary = "";
@@ -891,7 +892,7 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
           );
 
           onUpdate?.({ content: [{ type: "text" as const, text: `  Retrying ${step.agent} (attempt ${retries + 1}/${maxRetries + 1})...` }] });
-          output = await spawnAgent(step.agent, retryPrompt, ctx.cwd, signal, resolvedModel);
+          output = await spawnAgent(step.agent, retryPrompt, ctx.cwd, signal, resolvedModel, v2Timeout);
         }
       }
 
