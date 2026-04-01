@@ -570,12 +570,24 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
         }));
     } else if (agentSequence.length > 0) {
       const keyCommands = safeArray(parsed.key_commands);
-      steps = agentSequence.map((agentId: any, i: number) => ({
-        agent: safeStr(agentId),
-        action: keyCommands[i] ? safeStr(keyCommands[i]).replace(/^\*/, "") : safeStr(agentId),
-        creates: "",
-        requires: [],
-      }));
+      steps = agentSequence.map((item: any, i: number) => {
+        // Support both formats:
+        // v1 simple: agent_sequence: [agentId, agentId, ...]
+        // v1 rich:   agent_sequence: [{agent, role, action, task, gate}, ...]
+        const isObj = typeof item === "object" && item !== null;
+        const agentId = isObj ? safeStr(item.agent) : safeStr(item);
+        const action = isObj && item.action
+          ? safeStr(item.action)
+          : keyCommands[i] ? safeStr(keyCommands[i]).replace(/^\*/, "") : agentId;
+        return {
+          agent: agentId,
+          action,
+          creates: isObj ? safeStr(item.creates) : "",
+          requires: isObj && item.requires
+            ? (typeof item.requires === "string" ? [item.requires] : safeArray(item.requires))
+            : [],
+        };
+      });
     }
 
     // Parse v2/v3 sequence with full fidelity
