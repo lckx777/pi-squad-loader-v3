@@ -795,7 +795,30 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
       }
 
       // Build task with previous context
-      const taskPrompt = step.task.replace(/\{previous\}/g, handoffContext);
+      let taskPrompt = step.task.replace(/\{previous\}/g, handoffContext);
+
+      // ── ARTIFACT PATH INJECTION ──
+      // Tell the agent exactly where to write its output and where to read inputs.
+      // This ensures agents create files at the correct paths instead of ad-hoc locations.
+      const artifactInstructions: string[] = [];
+      if (artifactName) {
+        const targetPath = join(".squad-state", runId, "artifacts", artifactName);
+        artifactInstructions.push(`\n## Output Artifact\nWrite your primary output to: \`${targetPath}\``);
+        artifactInstructions.push(`Create parent directories if needed. This file will be read by subsequent pipeline steps.`);
+      }
+      // Tell agent where to find required input artifacts
+      if (v2Step?.requires && Array.isArray(v2Step.requires)) {
+        const reqPaths = v2Step.requires
+          .map((r: any) => typeof r === "object" ? r.artifact : r)
+          .filter(Boolean)
+          .map((a: string) => `  - \`.squad-state/${runId}/artifacts/${a}\``);
+        if (reqPaths.length > 0) {
+          artifactInstructions.push(`\n## Input Artifacts (read these first)\n${reqPaths.join("\n")}`);
+        }
+      }
+      if (artifactInstructions.length > 0) {
+        taskPrompt += "\n" + artifactInstructions.join("\n");
+      }
 
       // Dispatch agent
       let output = await spawnAgent(step.agent, taskPrompt, ctx.cwd, signal, resolvedModel);
@@ -867,13 +890,16 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
         }
       }
 
-      // ── FILESYSTEM COLLABORATION (v3) ──
+      // ── FILESYSTEM COLLABORATION ──
+      // Save artifact to disk whenever creates.artifact is declared — not gated
+      // behind harness config. v2 workflows with creates/requires need this to
+      // persist agent output across steps without truncation.
       let artifactPath: string | null = null;
       const artifactName = typeof v2Step?.creates === "object"
         ? v2Step.creates.artifact
         : typeof v2Step?.creates === "string" ? v2Step.creates : null;
 
-      if (artifactName && harnessConfig?.filesystem_collaboration?.enabled) {
+      if (artifactName) {
         artifactPath = saveArtifact(ctx.cwd, runId, artifactName, output);
         onUpdate?.({ content: [{ type: "text" as const, text: `  Artifact saved: ${artifactPath}\n${buildTrigger("artifact-saved", { step: i, artifact: artifactName, path: artifactPath })}` }] });
       }
@@ -910,8 +936,9 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
 
       const contextBudget = v2Step?.context?.budget || 0;
 
-      if (artifactPath && harnessConfig?.filesystem_collaboration?.enabled) {
-        // v3: reference artifact on disk instead of passing full content
+      if (artifactPath) {
+        // Reference artifact on disk instead of passing full content — prevents
+        // truncation of large outputs (system prompts, KB docs, etc.)
         lastOutput = `[Artifact from step ${i + 1} (${step.agent}): ${artifactPath}. Use the read tool to access it.]\n\n${output.slice(0, 2000)}${output.length > 2000 ? "\n[... truncated, full content at path above]" : ""}`;
       } else {
         lastOutput = formatHandoff(output, injectAs, artifactPath, contextBudget);
@@ -1037,7 +1064,8 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
           if (!parts[1]) { 0; return; }
           ensureDiscovered();
           ctx.ui.notify(activateSquad(parts[1]), "info");
-          await ctx.reload();
+          // No ctx.reload() — it re-evaluates the module via jiti (moduleCache: false),
+          // wiping in-memory state (activatedAgents, loadedSquads).
           break;
         }
         case "state": {
