@@ -566,6 +566,43 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
     }
     const hasTopLevelSteps = topLevelSteps.length > 0;
 
+    // Variant D: Recursive step discovery — universal fallback.
+    // Walks the entire YAML tree and collects objects that have an `agent` field.
+    // Covers: workflow.phases[].steps, phases[].sub_phases[].steps, and any
+    // future nesting structure. Only runs when V2 sequence AND topLevelSteps
+    // AND agent_sequence all failed to find steps.
+    let discoveredSteps: any[] = [];
+    if (!hasV2Sequence && !hasTopLevelSteps && agentSequence.length === 0) {
+      function discoverAgentSteps(obj: any, depth: number = 0): void {
+        if (!obj || typeof obj !== "object" || depth > 10) return;
+        if (Array.isArray(obj)) {
+          // Check if this array contains step-like objects (have `agent` field)
+          const agentItems = obj.filter(
+            (item: any) => item && typeof item === "object" && !Array.isArray(item) &&
+              (typeof item.agent === "string" ||
+               (item.execute && typeof item.execute.agent === "string"))
+          ).map((item: any) => {
+            // Unwrap execute wrapper if present: { execute: { agent, ... } } → { agent, ... }
+            if (!item.agent && item.execute && item.execute.agent) {
+              return { ...item.execute, id: item.id || item.execute.id };
+            }
+            return item;
+          });
+          if (agentItems.length > 0) {
+            discoveredSteps.push(...agentItems);
+            return; // Don't recurse INTO found step arrays
+          }
+          for (const item of obj) discoverAgentSteps(item, depth + 1);
+        } else {
+          for (const val of Object.values(obj)) {
+            if (typeof val === "object") discoverAgentSteps(val, depth + 1);
+          }
+        }
+      }
+      discoverAgentSteps(parsed);
+    }
+    const hasDiscoveredSteps = discoveredSteps.length > 0;
+
     // v3: detect harness at workflow level
     const workflowHarness = parseHarnessConfig(workflow.harness || parsed.harness);
     const isV3 = workflowHarness !== null;
@@ -618,6 +655,19 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
           creates: isObj ? safeStr(item.creates) : "",
           requires: isObj && item.requires
             ? (typeof item.requires === "string" ? [item.requires] : safeArray(item.requires))
+            : [],
+        };
+      });
+    } else if (hasDiscoveredSteps) {
+      // Variant D: discovered steps from recursive walk
+      steps = discoveredSteps.map((s: any) => {
+        const agentId = s.squad ? `${safeStr(s.squad)}/${safeStr(s.agent)}` : safeStr(s.agent);
+        return {
+          agent: agentId,
+          action: safeStr(s.action) || safeStr(s.description) || safeStr(s.task) || safeStr(s.agent),
+          creates: safeStr(s.creates),
+          requires: s.requires
+            ? (typeof s.requires === "string" ? [s.requires] : safeArray(s.requires))
             : [],
         };
       });
@@ -725,6 +775,26 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
               }
               return step;
             })
+        : hasDiscoveredSteps
+          ? discoveredSteps.map((s: any): V2WorkflowStep => {
+              const agentId = s.squad ? `${safeStr(s.squad)}/${safeStr(s.agent)}` : safeStr(s.agent);
+              return {
+                type: "agent" as const,
+                agent: agentId,
+                action: safeStr(s.action) || safeStr(s.description) || safeStr(s.task) || safeStr(s.agent),
+                model: safeStr(s.model),
+                creates: typeof s.creates === "object" ? s.creates : safeStr(s.creates),
+                requires: s.requires
+                  ? (typeof s.requires === "string"
+                      ? [{ artifact: s.requires, inject_as: "full" }]
+                      : safeArray(s.requires).map((r: any) =>
+                          typeof r === "object"
+                            ? { artifact: safeStr(r.artifact), inject_as: safeStr(r.inject_as) || "full" }
+                            : { artifact: safeStr(r), inject_as: "full" }
+                        ))
+                  : [],
+              };
+            })
         : [];
 
     // Collect human gate IDs
@@ -752,7 +822,7 @@ export function parseWorkflow(workflowPath: string): SquadWorkflow | null {
       agentSequence,
       steps,
       filePath: workflowPath,
-      isV2: hasV2Sequence || hasTopLevelSteps,
+      isV2: hasV2Sequence || hasTopLevelSteps || hasDiscoveredSteps,
       v2Sequence,
       v2State,
       v2ModelStrategy,
