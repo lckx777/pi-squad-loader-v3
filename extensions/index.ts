@@ -797,6 +797,11 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
       // Build task with previous context
       let taskPrompt = step.task.replace(/\{previous\}/g, handoffContext);
 
+      // ── ARTIFACT NAME (resolved early for prompt injection + later save) ──
+      const artifactName = typeof v2Step?.creates === "object"
+        ? v2Step.creates.artifact
+        : typeof v2Step?.creates === "string" ? v2Step.creates : null;
+
       // ── ARTIFACT PATH INJECTION ──
       // Tell the agent exactly where to write its output and where to read inputs.
       // This ensures agents create files at the correct paths instead of ad-hoc locations.
@@ -895,9 +900,6 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
       // behind harness config. v2 workflows with creates/requires need this to
       // persist agent output across steps without truncation.
       let artifactPath: string | null = null;
-      const artifactName = typeof v2Step?.creates === "object"
-        ? v2Step.creates.artifact
-        : typeof v2Step?.creates === "string" ? v2Step.creates : null;
 
       if (artifactName) {
         artifactPath = saveArtifact(ctx.cwd, runId, artifactName, output);
