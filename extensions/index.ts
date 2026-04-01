@@ -1072,7 +1072,12 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
           break;
         }
         case "activate": {
-          if (!parts[1]) { 0; return; }
+          if (!parts[1]) {
+            ensureDiscovered();
+            const names = state.manifests.map(m => m.name);
+            ctx.ui.notify(`Usage: /squad activate <name>\nAvailable: ${names.join(", ")}`, "info");
+            return;
+          }
           ensureDiscovered();
           ctx.ui.notify(activateSquad(parts[1]), "info");
           // No ctx.reload() — it re-evaluates the module via jiti (moduleCache: false),
@@ -1090,11 +1095,36 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
           break;
         }
         case "run": {
-          if (!parts[1] || !parts[2]) { 0; return; }
-          if (!state.loadedSquads.has(parts[1])) { 0; return; }
+          if (!parts[1] || !parts[2]) {
+            ctx.ui.notify("Usage: /squad run <squad-name> <workflow-name>", "info");
+            return;
+          }
+          if (!state.loadedSquads.has(parts[1])) {
+            ctx.ui.notify(`Squad "${parts[1]}" not activated. Run /squad activate ${parts[1]} first.`, "error");
+            return;
+          }
           const briefing = await ctx.ui.editor(`Briefing for ${parts[2]}: Provide initial context`);
           if (!briefing) return;
           pi.sendUserMessage(`Use squad_workflow with squad="${parts[1]}", workflow="${parts[2]}", context="${briefing}"`, { deliverAs: "steer" });
+          break;
+        }
+        case "agents": {
+          ensureDiscovered();
+          const squadName = parts[1];
+          if (!squadName) {
+            const names = state.manifests.map(m => m.name);
+            ctx.ui.notify(`Usage: /squad agents <name>\nAvailable: ${names.join(", ")}`, "info");
+            return;
+          }
+          const manifest = state.manifests.find(m => m.name === squadName);
+          if (!manifest) { ctx.ui.notify(`Squad "${squadName}" not found.`, "error"); return; }
+          const parsed = parseFullSquad(manifest);
+          const agentLines = parsed.agents.map(a => `  ${a.icon || "•"} ${a.id} — ${a.title}`);
+          ctx.ui.notify(`${squadName} — ${parsed.agents.length} agents:\n${agentLines.join("\n")}`, "info");
+          break;
+        }
+        case "inject": {
+          ctx.ui.notify("Use the squad_inject tool to inject artifacts into GSD context.", "info");
           break;
         }
         case "status": {
@@ -1107,7 +1137,7 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
           break;
         }
         default:
-          0;
+          ctx.ui.notify(`Unknown subcommand: "${subcommand}". Use: list, agents, activate, run, state, inject, status`, "error");
       }
     },
   });
