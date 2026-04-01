@@ -35,7 +35,7 @@ import {
   saveCheckpoint, saveHumanGateResponse, finalizeRun,
   getResumeInfo, listRuns, resolveModel,
   formatHandoff, fillTemplate, buildTrigger, stateDir,
-  saveArtifact, compactHandoff,
+  saveArtifact, artifactsDir, compactHandoff,
   type RunState,
 } from "../lib/v3-runtime.js";
 import {
@@ -897,14 +897,22 @@ export default function squadLoaderV3(pi: ExtensionAPI) {
       }
 
       // ── FILESYSTEM COLLABORATION ──
-      // Save artifact to disk whenever creates.artifact is declared — not gated
-      // behind harness config. v2 workflows with creates/requires need this to
-      // persist agent output across steps without truncation.
+      // The agent may have already written the artifact via write tool during
+      // execution (filesystem collaboration). Check before overwriting.
+      // Priority: agent-written file > runtime save of output text.
       let artifactPath: string | null = null;
 
       if (artifactName) {
-        artifactPath = saveArtifact(ctx.cwd, runId, artifactName, output);
-        onUpdate?.({ content: [{ type: "text" as const, text: `  Artifact saved: ${artifactPath}\n${buildTrigger("artifact-saved", { step: i, artifact: artifactName, path: artifactPath })}` }] });
+        const expectedPath = join(artifactsDir(ctx.cwd, runId), artifactName);
+        if (existsSync(expectedPath) && readFileSync(expectedPath, "utf8").length > output.length) {
+          // Agent already wrote a larger file — don't overwrite with summary
+          artifactPath = expectedPath;
+          onUpdate?.({ content: [{ type: "text" as const, text: `  Artifact preserved (agent-written): ${artifactPath}\n${buildTrigger("artifact-saved", { step: i, artifact: artifactName, path: artifactPath, source: "agent" })}` }] });
+        } else {
+          // Agent didn't write, or wrote less than output — save output as artifact
+          artifactPath = saveArtifact(ctx.cwd, runId, artifactName, output);
+          onUpdate?.({ content: [{ type: "text" as const, text: `  Artifact saved: ${artifactPath}\n${buildTrigger("artifact-saved", { step: i, artifact: artifactName, path: artifactPath, source: "runtime" })}` }] });
+        }
       }
 
       // ── CHECKPOINT ──
